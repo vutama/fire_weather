@@ -6,6 +6,9 @@ import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import cftime
+import cartopy.feature as cfeature
+from matplotlib.patches import Rectangle
+import regionmask
 from fwdp import computeFireWeatherIndices
 
 # =====================================================================================
@@ -524,228 +527,732 @@ def calculate_exceedance_days(threshold,
 
     return result
 
-# (7) Create map
-def create_map(data,
-               title,
-               label,
-               levels,
-               cmap='coolwarm',
-               baseline_data=None,
-               contour_data=None,
-               min_agreement=0.0,
-               land_masking=True,
-               region_boxes=False,
-               contour=False,
-               show_stippling=False,
-               textbox_outside=False,
-               map_proj=ccrs.Robinson()):
+# (7) Create global map
+def create_global_map(data, 
+                     projection=ccrs.Robinson(),
+                     title="Global Map",
+                     colormap='RdBu_r',
+                     colorbar_title="Change",
+                     textbox_text=None,
+                     figsize=(10.5, 6),
+                     vmin=None,
+                     vmax=None,
+                     extend='both',
+                     colorbar_levels=None,
+                     contour_levels=None,
+                     hatching='///',
+                     regional_boundaries=True,
+                     hatching_style='overlay',
+                     hatching_data=None,
+                     colorbar_extend=None,
+                     show_gridlines=True,
+                     ramip_regions=False):
     """
-    Consolidated function for creating maps
+    Create a global map visualization similar to climate change impact maps.
     
     Parameters:
     -----------
-    data : xarray.DataArray
-        Data to plot
-    title : str
-        Plot title
-    label : str
-        Colorbar label
-    levels : array-like
-        Contour levels for plotting
-    cmap : str, optional
-        Colormap name
-    baseline_data : xarray.DataArray, optional
-        Baseline data for difference plots
-    contour_data : xarray.DataArray, optional
-        Data to use for contour lines (if different from baseline_data)
-    min_agreement : float, optional
-        Minimum agreement for significance masking
-    land_masking : bool, optional
-        Whether to apply land masking
-    region_boxes : bool, optional
-        Whether to add region boxes
-    contour : bool, optional
-        Whether to add contour lines
-    show_stippling : bool, optional
-        Whether to show stippling in areas that pass land masking but not significance
-    textbox_outside : bool, optional
-        Whether to place textbox outside the map
-    map_proj : cartopy.crs, optional
-        Map projection
-        
+    data : xarray.DataArray or list of xarray.DataArrays
+        If DataArray: 2D DataArray with lat/lon coordinates for filled contour plot
+        If list: [fill_data, contour_data] where fill_data is for colors and 
+                 contour_data is for contour lines (contour_data is optional)
+    projection : cartopy projection, optional
+        Map projection to use (default: Robinson)
+    title : str, optional
+        Title for the plot (default: "Global Map")
+    colormap : str, optional
+        Matplotlib colormap name (default: 'RdBu_r')
+    colorbar_title : str, optional
+        Title for the colorbar (default: "Change")
+    textbox_text : str, optional
+        Text to display in the bottom-left textbox (supports f-string format)
+    figsize : tuple, optional
+        Figure size (width, height) in inches (default: (10.5, 6))
+    vmin : float, optional
+        Minimum value for color scale
+    vmax : float, optional
+        Maximum value for color scale
+    extend : str, optional
+        Colorbar extension ('both', 'min', 'max', 'neither') - DEPRECATED, use colorbar_extend
+    colorbar_levels : array-like, optional
+        Specific levels for the colorbar/filled contours
+    contour_levels : array-like, optional
+        Specific levels for contour lines
+    hatching : str, optional
+        Hatching pattern for masked areas (default: '///', set to None to disable)
+    regional_boundaries : str or bool, optional
+        Type of boundaries to show. Options: True or 'countries' (country boundaries), 
+        'ar6' (IPCC AR6 WG1 reference regions), False or 'none' (no boundaries) 
+        (default: True)
+    hatching_style : str, optional
+        How to display hatched areas: 'overlay' (hatching over colors) or 
+        'white' (white background with hatching) (default: 'overlay')
+    hatching_data : xarray.DataArray, optional
+        Data array indicating where to apply hatching. Hatching will be applied 
+        where hatching_data is NOT NaN (i.e., only over valid hatching indicator areas).
+    colorbar_extend : str, optional
+        Controls colorbar arrows: 'min' (arrow at bottom), 'max' 
+        (arrow at top), 'both' (arrows at both ends), 'neither' (no arrows).
+        If None, uses the 'extend' parameter for backward compatibility.
+    show_gridlines : bool, optional
+        Whether to display map gridlines (default: True)
+    ramip_regions : bool, str, or list, optional
+        Whether to display RAMIP emission region boxes. Options:
+        - False: No RAMIP regions (default)
+        - True: All 4 groups of RAMIP regions
+        - 'east_asia': East Asia region only
+        - 'south_asia': South Asia region only  
+        - 'africa_mideast': Africa & Middle East region only
+        - 'north_america_europe': North America & Europe regions only
+        - list: Combination of region names, e.g. ['east_asia', 'south_asia']
+    
     Returns:
     --------
-    matplotlib.figure.Figure, matplotlib.axes.Axes
+    fig, ax : matplotlib figure and axis objects
+    
+    Example:
+    --------
+    # Single dataset example with RAMIP regions
+    lons = np.linspace(-180, 180, 144)
+    lats = np.linspace(-90, 90, 72)
+    fill_data = xr.DataArray(
+        np.random.randn(72, 144) * 20,
+        coords={'lat': lats, 'lon': lons},
+        dims=['lat', 'lon']
+    )
+    
+    fig, ax = create_global_map(
+        data=fill_data,
+        title="Effect of Aerosol Emission Reduction",
+        colorbar_title="Δ Annual High Fire Danger Days",
+        textbox_text="2.29 days",
+        ramip_regions=True,  # Show all RAMIP regions, or specify: 'east_asia', 'south_asia', etc.
+        regional_boundaries='ar6',
+        show_gridlines=False
+    )
+    plt.show()
     """
-    # Make data cyclic
-    new_data, new_lon = cutil.add_cyclic(data, x=data.lon)
-    da_map_cyclic = xr.DataArray(new_data,
-                                coords={'lat': data.lat, 'lon': new_lon},
-                                dims=["lat", "lon"])
-    
-    # First apply only land masking to get land-only data
-    da_land_masked, da_mask = apply_masks(
-        da_map_cyclic,
-        get_significance=False,
-        get_land_mask=land_masking
-    )
-    
-    # Then apply both masks to get final plot data
-    da_map_masked, _ = apply_masks(
-        da_map_cyclic,
-        get_significance=(baseline_data is not None),
-        min_agreement=min_agreement,
-        get_land_mask=land_masking,
-        baseline_data=baseline_data
-    )
-    
-    # Set colorbar and textbox positions
-    if textbox_outside:
-        cb_pad = 0.1
-        text_x = 0.015
-        text_y = -0.58
+
+    # Handle input data - can be single DataArray or list
+    if isinstance(data, list):
+        fill_data = data[0]
+        contour_data = data[1] if len(data) > 1 else None
     else:
-        cb_pad = 0.05
-        text_x = 0.015
-        text_y = 0.05
+        fill_data = data
+        contour_data = None
     
-    # Create figure
-    fig = plt.figure(figsize=[10, 7.5])
-    ax = fig.add_subplot(111, projection=map_proj)
+    # Create figure and axis with specified projection
+    fig = plt.figure(figsize=figsize, facecolor='white')
+    ax = plt.axes(projection=projection)
     
-    # Create main plot
-    da_map_masked.plot(
-        ax=ax,
-        transform=ccrs.PlateCarree(),
-        cmap=cmap,
-        extend="both",
-        levels=levels,
-        cbar_kwargs={
-            'label': label,
-            'orientation': 'horizontal',
-            'pad': cb_pad
-        }
-    )
+    # Set global extent
+    ax.set_global()
     
-    # Add contours if requested
-    if contour:
-        # Determine which data to use for contours
-        if contour_data is not None:
-            plot_contours = contour_data
-        elif baseline_data is not None:
-            plot_contours = baseline_data
+    # Add map features - coastlines always shown
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.8, color='black')
+    
+    # Add boundaries based on user selection
+    if regional_boundaries is True or regional_boundaries == 'countries':
+        # Show country boundaries (default behavior)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5, color='gray', alpha=0.7)
+    elif regional_boundaries == 'ar6':
+        # Show IPCC AR6 WG1 reference regions
+        ar6_regions = regionmask.defined_regions.ar6.land
+        # Use cartopy-compatible plotting
+        ar6_regions.plot_regions(ax=ax, 
+                                line_kws={'linewidth': 0.8, 'color': 'black', 'alpha': 0.4},
+                                add_label=False)
+    # If False, 'none', or any other value, no additional boundaries are added
+    
+    # Handle fill data coordinates - ensure they're named correctly
+    if 'latitude' in fill_data.coords:
+        fill_data = fill_data.rename({'latitude': 'lat'})
+    if 'longitude' in fill_data.coords:
+        fill_data = fill_data.rename({'longitude': 'lon'})
+    
+    # Determine colorbar extension
+    if colorbar_extend is not None:
+        # Use the new parameter (now matches matplotlib's extend options directly)
+        if colorbar_extend in ['min', 'max', 'both', 'neither']:
+            extend_param = colorbar_extend
         else:
-            plot_contours = data
-            
-        # Make contour data cyclic and mask
-        new_contour_data, new_contour_lon = cutil.add_cyclic(plot_contours, x=plot_contours.lon)
-        contour_cyclic = xr.DataArray(new_contour_data,
-                                    coords={'lat': plot_contours.lat, 'lon': new_contour_lon},
-                                    dims=["lat", "lon"])
-        contour_masked, _ = apply_masks(contour_cyclic, get_land_mask=land_masking)
-        
-        # Plot contours
-        contour = contour_masked.plot.contour(
-            ax=ax,
-            transform=ccrs.PlateCarree(),
-            colors='black'
-        )
-        ax.clabel(contour, inline=True, fontsize=8)
-    
-    # Add stippling for areas that pass land mask but not significance
-    if show_stippling and baseline_data is not None and min_agreement > 0:
-        # Create a mask for stippling (True where we want stipples)
-        stipple_mask = xr.where(
-            xr.isnan(da_map_masked) & ~xr.isnan(da_land_masked),
-            True,
-            False
-        )
-        
-        # Convert to numpy arrays for plotting
-        lons, lats = np.meshgrid(new_lon, data.lat)
-        
-        # Plot stippling
-        ax.scatter(
-            lons[stipple_mask],
-            lats[stipple_mask],
-            color='black',
-            s=1,
-            alpha=0.5,
-            transform=ccrs.PlateCarree(),
-            marker='//'
-        )
-    
-    # Add region boxes if requested
-    if region_boxes:
-        add_region_boxes(ax, title)
-    
-    # Calculate and display weighted average
-    if da_mask is not None:
-        value = weighted_horizontal_avg(
-            da_map_masked.where(
-                (da_mask['landmask'].values == 1) &
-                (da_mask['PCT_NAT_PFT'].isel(time=-1).sel(natpft=0).values <= 80),
-                drop=False
-            ),
-            ensemble=False,
-            time=False
-        )
+            raise ValueError("colorbar_extend must be 'min', 'max', 'both', or 'neither'")
     else:
-        value = weighted_horizontal_avg(
-            da_map_masked,
-            ensemble=False,
-            time=False
-        )
+        # Fall back to the old extend parameter for backward compatibility
+        extend_param = extend
     
-    # Add textbox with value
-    ax.text(
-        text_x, text_y,
-        f"{value.values.item():.2f}",
-        bbox={'facecolor': 'white', 'alpha': 0.9, 'pad': 8},
-        transform=ax.transAxes
-    )
+    # Set color limits if not provided
+    if vmin is None or vmax is None:
+        data_range = np.nanmax(np.abs(fill_data.values))
+        if vmin is None:
+            vmin = -data_range
+        if vmax is None:
+            vmax = data_range
     
-    # Finalize plot
-    ax.set_title(title)
-    ax.coastlines()
-    ax.gridlines(color='grey', crs=ccrs.PlateCarree(), alpha=0.25)
+    # Create the main filled contour plot using contourf
+    if colorbar_levels is not None:
+        # Use provided levels
+        im = ax.contourf(fill_data.lon, fill_data.lat, fill_data.values, 
+                        levels=colorbar_levels,
+                        transform=ccrs.PlateCarree(),
+                        cmap=colormap,
+                        vmin=vmin, 
+                        vmax=vmax,
+                        extend=extend_param)
+    else:
+        # Generate automatic levels for contourf
+        im = ax.contourf(fill_data.lon, fill_data.lat, fill_data.values,
+                        transform=ccrs.PlateCarree(),
+                        cmap=colormap,
+                        vmin=vmin, 
+                        vmax=vmax,
+                        extend=extend_param)
+    
+    # Add contour lines if contour data is provided
+    if contour_data is not None:
+        # Handle contour data coordinates
+        if 'latitude' in contour_data.coords:
+            contour_data = contour_data.rename({'latitude': 'lat'})
+        if 'longitude' in contour_data.coords:
+            contour_data = contour_data.rename({'longitude': 'lon'})
+        
+        # Create contour lines
+        if contour_levels is not None:
+            cs = ax.contour(contour_data.lon, contour_data.lat, contour_data.values,
+                           levels=contour_levels,
+                           transform=ccrs.PlateCarree(),
+                           colors='black',
+                           linewidths=0.8,
+                           alpha=0.7)
+        else:
+            cs = ax.contour(contour_data.lon, contour_data.lat, contour_data.values,
+                           transform=ccrs.PlateCarree(),
+                           colors='black',
+                           linewidths=0.8,
+                           alpha=0.7)
+        
+        # Optionally add contour labels
+        ax.clabel(cs, inline=True, fontsize=8, fmt='%g')
+    
+    # Add hatching only where hatching_data specifies
+    if hatching is not None and hatching_data is not None:
+        # Handle coordinates for hatching data
+        if 'latitude' in hatching_data.coords:
+            hatching_data = hatching_data.rename({'latitude': 'lat'})
+        if 'longitude' in hatching_data.coords:
+            hatching_data = hatching_data.rename({'longitude': 'lon'})
+        
+        # Create hatching mask that uses hatching_data 
+        hatching_data_valid = ~np.isnan(hatching_data.values)  # True where hatching_data is not NaN
+        hatch_mask = hatching_data_valid 
+        
+        if np.any(hatch_mask):
+            # Create meshgrid for hatching
+            X, Y = np.meshgrid(hatching_data.lon, hatching_data.lat)
+            
+            if hatching_style == 'overlay':
+                # Overlay hatching (shows colors underneath)
+                ax.contourf(X, Y, hatch_mask.astype(int), 
+                           levels=[0.5, 1.5], 
+                           colors='none', 
+                           hatches=[hatching], 
+                           transform=ccrs.PlateCarree())
+            elif hatching_style == 'white':
+                # White areas with hatching (covers the filled contours)
+                ax.contourf(X, Y, hatch_mask.astype(int),
+                           levels=[0.5, 1.5], 
+                           colors=['white'],
+                           hatches=[hatching],
+                           transform=ccrs.PlateCarree(),
+                           alpha=1.0,
+                           zorder=5)
+    
+    # Add RAMIP emission region boxes
+    if ramip_regions:
+        # Determine which regions to show
+        regions_to_show = []
+        
+        if ramip_regions is True:
+            # Show all regions
+            regions_to_show = ['east_asia', 'south_asia', 'africa_mideast', 'north_america_europe']
+        elif isinstance(ramip_regions, str):
+            # Single region specified
+            regions_to_show = [ramip_regions]
+        elif isinstance(ramip_regions, (list, tuple)):
+            # Multiple regions specified
+            regions_to_show = list(ramip_regions)
+        
+        # Draw the specified regions
+        for region in regions_to_show:
+            if region == 'east_asia':
+                # East Asia
+                ax.add_patch(mpatches.Rectangle(
+                    xy=[lon_west_eas, lat_bot_eas], 
+                    width=(lon_east_eas - lon_west_eas), 
+                    height=(lat_top_eas - lat_bot_eas),
+                    facecolor='none',
+                    linestyle='--',
+                    linewidth=2.0,
+                    edgecolor='black',
+                    alpha=1,
+                    transform=ccrs.PlateCarree())
+                )
+            
+            elif region == 'south_asia':
+                # South Asia
+                ax.add_patch(mpatches.Rectangle(
+                    xy=[lon_west_sas, lat_bot_sas], 
+                    width=(lon_east_sas - lon_west_sas), 
+                    height=(lat_top_sas - lat_bot_sas),
+                    facecolor='none',
+                    linestyle='--',
+                    linewidth=2.0,
+                    edgecolor='black',
+                    alpha=1,
+                    transform=ccrs.PlateCarree())
+                )
+            
+            elif region == 'africa_mideast':
+                # Africa & Mid-East (crosses dateline) - use single rectangle with proper wrapping
+                ax.add_patch(mpatches.Rectangle(
+                    xy=[lon_west_afr, lat_bot_afr], 
+                    width=(lon_east_afr + (360 - lon_west_afr)), 
+                    height=(lat_top_afr - lat_bot_afr),
+                    facecolor='none',
+                    linestyle='--',
+                    linewidth=2.0,
+                    edgecolor='black',
+                    alpha=1,
+                    transform=ccrs.PlateCarree())
+                )
+            
+            elif region == 'north_america_europe':
+                # North America
+                ax.add_patch(mpatches.Rectangle(
+                    xy=[lon_west_nam, lat_bot_nam], 
+                    width=(lon_east_nam - lon_west_nam), 
+                    height=(lat_top_nam - lat_bot_nam),
+                    facecolor='none',
+                    linestyle='--',
+                    linewidth=2.0,
+                    edgecolor='black',
+                    alpha=1,
+                    transform=ccrs.PlateCarree())
+                )
+                
+                # Europe (crosses dateline) - use single rectangle with proper wrapping
+                ax.add_patch(mpatches.Rectangle(
+                    xy=[lon_west_eur, lat_bot_eur], 
+                    width=(lon_east_eur + (360 - lon_west_eur)), 
+                    height=(lat_top_eur - lat_bot_eur),
+                    facecolor='none',
+                    linestyle='--',
+                    linewidth=2.0,
+                    edgecolor='black',
+                    alpha=1,
+                    transform=ccrs.PlateCarree())
+                )
+    
+    # Add gridlines conditionally
+    if show_gridlines:
+        gl = ax.gridlines(draw_labels=False, linestyle='-', alpha=0.3, color='gray')
+    
+    # Create colorbar
+    cbar = plt.colorbar(im, ax=ax, orientation='horizontal', 
+                       pad=0.04, shrink=0.8, aspect=20,
+                       extend=extend_param)
+    cbar.set_label(colorbar_title, fontsize=18, fontweight='regular')
+    cbar.ax.tick_params(labelsize=14)
+    
+    # Add title
+    plt.title(title, fontsize=22, fontweight='regular', pad=15)
+    
+    # Add textbox in bottom-left corner if text is provided
+    if textbox_text is not None:
+        # Add white background rectangle
+        bbox_props = dict(boxstyle="round,pad=0.3", facecolor='white', 
+                         edgecolor='black', linewidth=1.0)
+        
+        ax.text(0.02, 0.02, textbox_text, transform=ax.transAxes,
+                fontsize=14, fontweight='regular',
+                verticalalignment='center', horizontalalignment='left',
+                bbox=bbox_props, zorder=10)
+    
+    # Adjust layout
+    plt.tight_layout()
     
     return fig, ax
 
-# (8) Add region boxes
-def add_region_boxes(ax, title):
+# (8) Create global map grid
+def create_global_map_grid(data_list, 
+                          rows=2, 
+                          cols=2,
+                          main_title="Global Map Grid",
+                          projection=ccrs.Robinson(),
+                          titles=None,
+                          colormaps='RdBu_r',
+                          colorbar_titles="Change",
+                          textbox_texts=None,
+                          figsize=None,
+                          vmins=None,
+                          vmaxs=None,
+                          extends='both',
+                          colorbar_levels=None,
+                          contour_levels=None,
+                          hatchings='///',
+                          regional_boundaries=True,
+                          hatching_styles='overlay',
+                          hatching_data=None,
+                          show_gridlines=True,
+                          ramip_regions=False,
+                          subplot_spacing={'hspace': 0.3, 'wspace': 0.1},
+                          colorbar_spacing=0.05):
     """
-    Adds regional boundary boxes to the map based on the title.
+    Create a grid of global map visualizations similar to climate change impact maps.
     
     Parameters:
     -----------
-    ax : matplotlib.axes
-        The axis to add the boxes to
-    title : str
-        Title of the plot that determines which boxes to draw
+    data_list : list
+        List of data for each subplot. Each item can be:
+        - xarray.DataArray: 2D DataArray with lat/lon coordinates for filled contour plot
+        - tuple/list: (fill_data, contour_data) where fill_data is for colors and 
+                      contour_data is for contour lines
+    rows : int
+        Number of rows in the grid (default: 2)
+    cols : int  
+        Number of columns in the grid (default: 2)
+    main_title : str, optional
+        Main title for the entire grid (default: "Global Map Grid")
+    projection : cartopy projection or list, optional
+        Map projection(s) to use. Can be single projection for all maps or list of projections
+    titles : str or list, optional
+        Title(s) for individual subplots. Can be single string or list
+    colormaps : str or list, optional
+        Colormap(s) to use. Can be single colormap or list (default: 'RdBu_r')
+    colorbar_titles : str or list, optional
+        Title(s) for colorbars. Can be single string or list (default: "Change")
+    textbox_texts : str, list, or None, optional
+        Text(s) for textboxes in subplots. Can be single string, list, or None
+    figsize : tuple, optional
+        Figure size (width, height) in inches. If None, auto-calculated based on grid size
+    vmins : float or list, optional
+        Minimum value(s) for color scale. Can be single value or list
+    vmaxs : float or list, optional  
+        Maximum value(s) for color scale. Can be single value or list
+    extends : str or list, optional
+        Colorbar extension(s): 'min', 'max', 'both', 'neither'. Can be single value or list
+    colorbar_levels : array-like or list, optional
+        Specific level(s) for colorbars. Can be single array or list of arrays
+    contour_levels : array-like or list, optional
+        Specific level(s) for contour lines. Can be single array or list of arrays
+    hatchings : str or list, optional
+        Hatching pattern(s). Can be single pattern or list (default: '///')
+    regional_boundaries : str, bool, or list, optional
+        Boundary type(s) to show. Can be single value or list
+    hatching_styles : str or list, optional
+        Hatching style(s). Can be single style or list (default: 'overlay')
+    hatching_data : xarray.DataArray, list, or None, optional
+        Hatching data for each subplot. Can be single DataArray, list, or None
+    extends : str or list, optional
+        Colorbar extension(s): 'min', 'max', 'both', 'neither'. Can be single value or list
+    show_gridlines : bool or list, optional
+        Whether to show gridlines. Can be single bool or list (default: True)
+    ramip_regions : bool, str, list, or list of lists, optional
+        RAMIP regions to show. Can be single value or list of values for each subplot
+    subplot_spacing : dict, optional
+        Spacing parameters for subplots: {'hspace': vertical, 'wspace': horizontal}
+    colorbar_spacing : float, optional
+        Additional space below each subplot for colorbar (default: 0.05)
+        
+    Returns:
+    --------
+    fig : matplotlib figure object
+    axes : array of matplotlib axis objects
+    
+    Example:
+    --------
+    # Create sample data
+    lons = np.linspace(-180, 180, 144)
+    lats = np.linspace(-90, 90, 72)
+    
+    data1 = xr.DataArray(np.random.randn(72, 144) * 20,
+                        coords={'lat': lats, 'lon': lons}, dims=['lat', 'lon'])
+    data2 = xr.DataArray(np.random.randn(72, 144) * 15,
+                        coords={'lat': lats, 'lon': lons}, dims=['lat', 'lon'])
+    data3 = xr.DataArray(np.random.randn(72, 144) * 25,
+                        coords={'lat': lats, 'lon': lons}, dims=['lat', 'lon'])
+    data4 = xr.DataArray(np.random.randn(72, 144) * 10,
+                        coords={'lat': lats, 'lon': lons}, dims=['lat', 'lon'])
+    
+    # Example with 5 maps in 2 columns (3 rows)
+    fig, axes = create_global_map_grid(
+        data_list=[data1, data2, data3, data4, data5],
+        rows=3, cols=2,  # 6 subplot positions, but only 5 maps (last position will be empty)
+        main_title="Fire Weather Changes - 5 Scenarios",
+        titles=["Scenario A", "Scenario B", "Scenario C", "Scenario D", "Scenario E"]
+    )
+    plt.show()
     """
-    if title == 'Effect of Aerosol Emission Reduction':
-        boxes = [
-            ('nam', lon_west_nam, lat_bot_nam, lon_east_nam-lon_west_nam, lat_top_nam-lat_bot_nam),
-            ('eur', lon_west_eur, lat_bot_eur, lon_east_eur+(360-lon_west_eur), lat_top_eur-lat_bot_eur),
-            ('afr', lon_west_afr, lat_bot_afr, lon_east_afr+(360-lon_west_afr), lat_top_afr-lat_bot_afr),
-            ('eas', lon_west_eas, lat_bot_eas, lon_east_eas-lon_west_eas, lat_top_eas-lat_bot_eas),
-            ('sas', lon_west_sas, lat_bot_sas, lon_east_sas-lon_west_sas, lat_top_sas-lat_bot_sas)
-        ]
-    elif title == 'Effect of East Asian Aerosol Reduction':
-        boxes = [('eas', lon_west_eas, lat_bot_eas, lon_east_eas-lon_west_eas, lat_top_eas-lat_bot_eas)]
-    elif title == 'Effect of South Asian Aerosol Reduction':
-        boxes = [('sas', lon_west_sas, lat_bot_sas, lon_east_sas-lon_west_sas, lat_top_sas-lat_bot_sas)]
-    elif title == 'Effect of African & Mid-Eastern Aerosol Reduction':
-        boxes = [('afr', lon_west_afr, lat_bot_afr, lon_east_afr+(360-lon_west_afr), lat_top_afr-lat_bot_afr)]
-    elif title == 'Effect of North American & European Aerosol Reduction':
-        boxes = [
-            ('nam', lon_west_nam, lat_bot_nam, lon_east_nam-lon_west_nam, lat_top_nam-lat_bot_nam),
-            ('eur', lon_west_eur, lat_bot_eur, lon_east_eur+(360-lon_west_eur), lat_top_eur-lat_bot_eur)
-        ]
-    else:
-        return
+    
+    # Validate inputs
+    n_plots = len(data_list)
+    max_plots = rows * cols
+    if n_plots > max_plots:
+        raise ValueError(f"Number of data items ({n_plots}) exceeds grid capacity ({max_plots})")
+    if n_plots == 0:
+        raise ValueError("data_list cannot be empty")
+    
+    # Helper function to convert single values to lists
+    def _ensure_list(param, default_val, n_items):
+        if param is None:
+            return [default_val] * n_items
+        elif isinstance(param, (list, tuple)):
+            # It's a list/tuple - check if it's meant to be per-subplot or single value
+            if len(param) == n_items:
+                return list(param)
+            elif len(param) == 1:
+                return [param[0]] * n_items
+            else:
+                raise ValueError(f"Parameter list length ({len(param)}) must be either 1 or {n_items}")
+        elif isinstance(param, np.ndarray):
+            # For numpy arrays, treat as single parameter to be applied to all subplots
+            return [param] * n_items
+        else:
+            # Single value - apply to all subplots
+            return [param] * n_items
+    
+    # Convert all parameters to lists
+    projections = _ensure_list(projection, ccrs.Robinson(), n_plots)
+    title_list = _ensure_list(titles, "Global Map", n_plots)
+    colormap_list = _ensure_list(colormaps, 'RdBu_r', n_plots)
+    colorbar_title_list = _ensure_list(colorbar_titles, "Change", n_plots)
+    textbox_text_list = _ensure_list(textbox_texts, None, n_plots)
+    vmin_list = _ensure_list(vmins, None, n_plots)
+    vmax_list = _ensure_list(vmaxs, None, n_plots)
+    extend_list = _ensure_list(extends, 'both', n_plots)
+    colorbar_level_list = _ensure_list(colorbar_levels, None, n_plots)
+    contour_level_list = _ensure_list(contour_levels, None, n_plots)
+    hatching_list = _ensure_list(hatchings, '///', n_plots)
+    regional_boundary_list = _ensure_list(regional_boundaries, True, n_plots)
+    hatching_style_list = _ensure_list(hatching_styles, 'overlay', n_plots)
+    hatching_data_list = _ensure_list(hatching_data, None, n_plots)
+    show_gridlines_list = _ensure_list(show_gridlines, True, n_plots)
+    ramip_regions_list = _ensure_list(ramip_regions, False, n_plots)
+    
+    # Calculate figure size if not provided
+    if figsize is None:
+        # Base size per subplot, adjusted for colorbars and spacing
+        base_width = 5.0
+        base_height = 3.5
+        figsize = (cols * base_width, rows * (base_height + colorbar_spacing * 8))
+    
+    # Create figure and subplots
+    fig = plt.figure(figsize=figsize, facecolor='white')
+    
+    # Calculate subplot positions to leave room for individual colorbars
+    subplot_height = (1.0 - subplot_spacing['hspace']) / rows - colorbar_spacing
+    subplot_width = (1.0 - subplot_spacing['wspace']) / cols
+    
+    axes = []
+    
+    for i in range(n_plots):
+        row = i // cols
+        col = i % cols
+        
+        # Calculate subplot position
+        left = col * (subplot_width + subplot_spacing['wspace'] / cols) + subplot_spacing['wspace'] / (2 * cols)
+        bottom = (rows - row - 1) * (subplot_height + colorbar_spacing + subplot_spacing['hspace'] / rows) + colorbar_spacing + subplot_spacing['hspace'] / (2 * rows)
+        
+        # Create subplot with cartopy projection
+        ax = fig.add_subplot(rows, cols, i + 1, projection=projections[i])
+        axes.append(ax)
+        
+        # Get current data
+        current_data = data_list[i]
+        
+        # Handle input data - can be single DataArray or tuple/list
+        if isinstance(current_data, (list, tuple)):
+            fill_data = current_data[0]
+            contour_data = current_data[1] if len(current_data) > 1 else None
+        else:
+            fill_data = current_data
+            contour_data = None
+        
+        # Set global extent
+        ax.set_global()
+        
+        # Add map features
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, color='black')
+        
+        # Add boundaries based on user selection
+        current_boundaries = regional_boundary_list[i]
+        if current_boundaries is True or current_boundaries == 'countries':
+            ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.7)
+        elif current_boundaries == 'ar6':
+            ar6_regions = regionmask.defined_regions.ar6.land
+            ar6_regions.plot_regions(ax=ax, 
+                                   line_kws={'linewidth': 0.6, 'color': 'black', 'alpha': 0.4},
+                                   add_label=False)
+        
+        # Handle fill data coordinates
+        if 'latitude' in fill_data.coords:
+            fill_data = fill_data.rename({'latitude': 'lat'})
+        if 'longitude' in fill_data.coords:
+            fill_data = fill_data.rename({'longitude': 'lon'})
+        
+        # Use extends parameter directly
+        extend_param = extend_list[i]
+        
+        # Set color limits
+        vmin = vmin_list[i]
+        vmax = vmax_list[i]
+        if vmin is None or vmax is None:
+            data_range = np.nanmax(np.abs(fill_data.values))
+            if vmin is None:
+                vmin = -data_range
+            if vmax is None:
+                vmax = data_range
+        
+        # Create filled contour plot
+        if colorbar_level_list[i] is not None:
+            im = ax.contourf(fill_data.lon, fill_data.lat, fill_data.values, 
+                           levels=colorbar_level_list[i],
+                           transform=ccrs.PlateCarree(),
+                           cmap=colormap_list[i],
+                           vmin=vmin, vmax=vmax,
+                           extend=extend_param)
+        else:
+            im = ax.contourf(fill_data.lon, fill_data.lat, fill_data.values,
+                           transform=ccrs.PlateCarree(),
+                           cmap=colormap_list[i],
+                           vmin=vmin, vmax=vmax,
+                           extend=extend_param)
+        
+        # Add contour lines if contour data is provided
+        if contour_data is not None:
+            if 'latitude' in contour_data.coords:
+                contour_data = contour_data.rename({'latitude': 'lat'})
+            if 'longitude' in contour_data.coords:
+                contour_data = contour_data.rename({'longitude': 'lon'})
+            
+            if contour_level_list[i] is not None:
+                cs = ax.contour(contour_data.lon, contour_data.lat, contour_data.values,
+                               levels=contour_level_list[i],
+                               transform=ccrs.PlateCarree(),
+                               colors='black', linewidths=0.6, alpha=0.7)
+            else:
+                cs = ax.contour(contour_data.lon, contour_data.lat, contour_data.values,
+                               transform=ccrs.PlateCarree(),
+                               colors='black', linewidths=0.6, alpha=0.7)
+            ax.clabel(cs, inline=True, fontsize=6, fmt='%g')
+        
+        # Add hatching
+        if hatching_list[i] is not None and hatching_data_list[i] is not None:
+            hatch_data = hatching_data_list[i]
+            if 'latitude' in hatch_data.coords:
+                hatch_data = hatch_data.rename({'latitude': 'lat'})
+            if 'longitude' in hatch_data.coords:
+                hatch_data = hatch_data.rename({'longitude': 'lon'})
+            
+            hatching_data_valid = ~np.isnan(hatch_data.values)
+            hatch_mask = hatching_data_valid
+            
+            if np.any(hatch_mask):
+                X, Y = np.meshgrid(hatch_data.lon, hatch_data.lat)
+                if hatching_style_list[i] == 'overlay':
+                    ax.contourf(X, Y, hatch_mask.astype(int), 
+                               levels=[0.5, 1.5], colors='none', 
+                               hatches=[hatching_list[i]], 
+                               transform=ccrs.PlateCarree())
+                elif hatching_style_list[i] == 'white':
+                    ax.contourf(X, Y, hatch_mask.astype(int),
+                               levels=[0.5, 1.5], colors=['white'],
+                               hatches=[hatching_list[i]],
+                               transform=ccrs.PlateCarree(),
+                               alpha=1.0, zorder=5)
+        
+        # Add RAMIP regions (copied from original function)
+        current_ramip = ramip_regions_list[i]
+        if current_ramip:
+            # RAMIP region definitions
+            regions_coords = {
+                'east_asia': {'lon_west': 95, 'lon_east': 133, 'lat_bot': 20, 'lat_top': 53},
+                'south_asia': {'lon_west': 65, 'lon_east': 95, 'lat_bot': 5, 'lat_top': 35},
+                'africa_mideast': {'lon_west': 340, 'lon_east': 60, 'lat_bot': -35, 'lat_top': 35},
+                'north_america': {'lon_west': 210, 'lon_east': 315, 'lat_bot': 25, 'lat_top': 70},
+                'europe': {'lon_west': 340, 'lon_east': 45, 'lat_bot': 35, 'lat_top': 70}
+            }
+            
+            # Determine regions to show
+            regions_to_show = []
+            if current_ramip is True:
+                regions_to_show = ['east_asia', 'south_asia', 'africa_mideast', 'north_america', 'europe']
+            elif isinstance(current_ramip, str):
+                if current_ramip == 'north_america_europe':
+                    regions_to_show = ['north_america', 'europe']
+                else:
+                    regions_to_show = [current_ramip]
+            elif isinstance(current_ramip, (list, tuple)):
+                for region in current_ramip:
+                    if region == 'north_america_europe':
+                        regions_to_show.extend(['north_america', 'europe'])
+                    else:
+                        regions_to_show.append(region)
+            
+            # Draw regions
+            for region in regions_to_show:
+                if region in regions_coords:
+                    coords = regions_coords[region]
+                    if region in ['africa_mideast', 'europe']:  # Handle dateline crossing
+                        width = coords['lon_east'] + (360 - coords['lon_west'])
+                    else:
+                        width = coords['lon_east'] - coords['lon_west']
+                    
+                    ax.add_patch(mpatches.Rectangle(
+                        xy=[coords['lon_west'], coords['lat_bot']], 
+                        width=width,
+                        height=(coords['lat_top'] - coords['lat_bot']),
+                        facecolor='none', linestyle='--', linewidth=1.5,
+                        edgecolor='black', alpha=1,
+                        transform=ccrs.PlateCarree()))
+        
+        # Add gridlines
+        if show_gridlines_list[i]:
+            ax.gridlines(draw_labels=False, linestyle='-', alpha=0.3, color='gray')
+        
+        # Create individual colorbar for each subplot
+        cbar = plt.colorbar(im, ax=ax, orientation='horizontal', 
+                           pad=0.08, shrink=0.8, aspect=15,
+                           extend=extend_param)
+        cbar.set_label(colorbar_title_list[i], fontsize=10)
+        cbar.ax.tick_params(labelsize=8)
+        
+        # Add subplot title
+        ax.set_title(title_list[i], fontsize=12, pad=10)
+        
+        # Add textbox if provided
+        if textbox_text_list[i] is not None:
+            bbox_props = dict(boxstyle="round,pad=0.2", facecolor='white', 
+                            edgecolor='black', linewidth=0.8)
+            ax.text(0.02, 0.02, textbox_text_list[i], transform=ax.transAxes,
+                   fontsize=10, verticalalignment='center', horizontalalignment='left',
+                   bbox=bbox_props, zorder=10)
+    
+    # Add main title
+    fig.suptitle(main_title, fontsize=16, fontweight='regular', y=0.95)
+    
+    # Hide any unused subplots
+    total_subplots = rows * cols
+    for i in range(n_plots, total_subplots):
+        ax_unused = fig.add_subplot(rows, cols, i + 1)
+        ax_unused.set_visible(False)
+    
+    # Adjust layout
+    plt.subplots_adjust(**subplot_spacing)
+    
+    return fig, axes
 
+# (9) Apply significance and land masks
 def apply_masks(data, 
                 get_significance=False, 
                 agreement_threshold=0.0,
@@ -916,7 +1423,7 @@ def apply_masks(data,
     return masked_data, da_mask
 
 
-# (10)Calculating the regional effects of GHG and aerosol reduction relative to historical
+# (10) Calculating the regional effects of GHG and aerosol reduction relative to historical
 def table_regional_time_mean(historical_var, ssp370_var, global_var, ssp126_var,\
                              start_analysis,\
                                 end_analysis,\
@@ -980,7 +1487,7 @@ def table_regional_time_mean(historical_var, ssp370_var, global_var, ssp126_var,
     print(f"Change in regional annual high fire danger days due to GHG reduction: {ghg_eff.values.item(0):.2f} days")
     print(f"Change in regional annual high fire danger days due to aerosol reduction: {aerosol_eff.values.item(0):.2f} days")
 
-# (11)Calculating regional mean 
+# (11) Calculating regional mean 
 def regional_time_mean(da,\
                        start_analysis,\
                         end_analysis,\
