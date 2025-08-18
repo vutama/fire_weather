@@ -1,14 +1,15 @@
-import numpy as np
-import pandas as pd 
-import xarray as xr
-import cartopy.util as cutil
-import cartopy.crs as ccrs
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import cftime
-import cartopy.feature as cfeature
-from matplotlib.patches import Rectangle
-import regionmask
+import numpy as np # type: ignore
+import pandas as pd # type: ignore
+import xarray as xr # type: ignore
+import os # type: ignore
+import cartopy.util as cutil # type: ignore
+import cartopy.crs as ccrs # type: ignore
+import matplotlib.pyplot as plt # type: ignore
+import matplotlib.patches as mpatches # type: ignore
+import cftime # type: ignore
+import cartopy.feature as cfeature # type: ignore
+from matplotlib.patches import Rectangle # type: ignore
+import regionmask # type: ignore
 from fwdp import computeFireWeatherIndices
 
 # =====================================================================================
