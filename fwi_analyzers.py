@@ -13,9 +13,9 @@ FireWeatherAnalyzer class to perform different types of fire weather analysis:
 Each analyzer implements the specific data processing and analysis logic for its metric type.
 """
 
-import xarray as xr
-import numpy as np
-import matplotlib.pyplot as plt
+import xarray as xr #type: ignore
+import numpy as np #type: ignore
+import matplotlib.pyplot as plt #type: ignore
 from typing import Dict, Any, Tuple
 
 from fwi_analysis_framework import (
@@ -53,6 +53,23 @@ class RawValueAnalyzer(FireWeatherAnalyzer):
         
         print("✓ Data processing complete")
         return processed
+    
+    def _process_seasonal_data(self, scenario_name: str) -> xr.DataArray:
+        """Process seasonal data for a specific scenario, applying season_mean to each model individually."""
+        # Get the raw data for this scenario
+        scenario_raw_data = self.raw_data[scenario_name]
+        
+        # Process each model individually: season_mean first, then mean across members
+        model_seasonal_data = []
+        for model in self.config.models:
+            model_data = scenario_raw_data[model]
+            # Apply season_mean to individual model data, then average across members
+            model_seasonal = season_mean(model_data).mean('member', skipna=True)
+            model_seasonal_data.append(model_seasonal)
+        
+        # Now combine the processed seasonal data across models
+        combined_seasonal = xr.concat(model_seasonal_data, dim="model", coords='minimal')
+        return combined_seasonal.compute()
     
     def run_annual_analysis(self):
         """Run annual FWI analysis."""
@@ -139,7 +156,9 @@ class RawValueAnalyzer(FireWeatherAnalyzer):
         print("Step 1: Calculating seasonal means...")
         seasonal_means = {}
         for scenario, data in self.processed_data.items():
-            seasonal_data = season_mean(data).mean('member', skipna=True)
+            # For seasonal analysis, we need to process each model individually
+            # before combining, to match the original script behavior
+            seasonal_data = self._process_seasonal_data(scenario)
             seasonal_means[scenario] = seasonal_data
         
         # Create historical seasonal baseline plot
@@ -206,7 +225,7 @@ class RawValueAnalyzer(FireWeatherAnalyzer):
     def _create_historical_seasonal_plot(self, historical_data: xr.DataArray):
         """Create historical seasonal baseline plot."""
         # Apply masks
-        masked_data, _ = apply_masks(historical_data, get_significance=False, get_land_mask=True)
+        masked_data, _ = apply_masks(historical_data, get_significance=False, get_land_mask=True, baseline_data=None)
         
         # Calculate global averages
         global_avg = weighted_horizontal_avg(masked_data.mean('model'), ensemble=False, time=False)

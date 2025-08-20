@@ -32,11 +32,11 @@ analyzer = PercentileThresholdAnalyzer(config)
 analyzer.run_analysis()
 """
 
-import xarray as xr
-import numpy as np
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cftime
+import xarray as xr #type: ignore
+import numpy as np #type: ignore
+import matplotlib.pyplot as plt #type: ignore
+import cartopy.crs as ccrs #type: ignore
+import cftime #type: ignore
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple, Any
 from dataclasses import dataclass, field
@@ -309,7 +309,8 @@ class FireWeatherAnalyzer(ABC):
         self.data_manager = DataManager(config)
         self.plotting_manager = PlottingManager(config)
         
-        # Create output directory
+        # Ensure output_dir is a Path object and create directory
+        self.config.output_dir = Path(self.config.output_dir)
         self.config.output_dir.mkdir(exist_ok=True)
         
         # Data storage
@@ -383,12 +384,16 @@ class FireWeatherAnalyzer(ABC):
     
     def calculate_global_average(self, data: xr.DataArray) -> xr.DataArray:
         """Calculate area-weighted global average."""
-        # Apply land mask for global average
-        masked_data, _ = apply_masks(data, get_significance=False, get_land_mask=True)
-        
-        return weighted_horizontal_avg(masked_data.mean('model'), 
-                                     ensemble=False, 
-                                     time=False)
+        masked_data, _ = apply_masks(data, get_significance=False, get_land_mask=True, baseline_data=None)
+        # Always average across models first, then calculate weighted average
+        if "model" in masked_data.dims:
+            model_averaged = masked_data.mean('model')
+            return weighted_horizontal_avg(model_averaged, ensemble=False, time=False)
+        elif "member" in masked_data.dims:
+            member_averaged = masked_data.mean('member')
+            return weighted_horizontal_avg(member_averaged, ensemble=False, time=False)
+        else:
+            return weighted_horizontal_avg(masked_data, ensemble=False, time=False)
     
     def print_summary(self):
         """Print analysis summary."""
@@ -427,8 +432,11 @@ class PlottingManager:
         
         global_avg = self.calculate_global_average(data)
         
+        # Apply land mask for map display
+        masked_data, _ = apply_masks(data, get_significance=False, get_land_mask=True, baseline_data=None)
+        
         fig, ax = create_global_map(
-            data.mean('model'),
+            masked_data.mean('model'),
             projection=ccrs.Robinson(),
             title=title,
             colormap=plot_params['colormap'],
@@ -541,8 +549,16 @@ class PlottingManager:
     
     def calculate_global_average(self, data: xr.DataArray) -> xr.DataArray:
         """Calculate area-weighted global average."""
-        masked_data, _ = apply_masks(data, get_significance=False, get_land_mask=True)
-        return weighted_horizontal_avg(masked_data, ensemble=False, time=False)
+        masked_data, _ = apply_masks(data, get_significance=False, get_land_mask=True, baseline_data=None)
+        # Always average across models first, then calculate weighted average
+        if "model" in masked_data.dims:
+            model_averaged = masked_data.mean('model')
+            return weighted_horizontal_avg(model_averaged, ensemble=False, time=False)
+        elif "member" in masked_data.dims:
+            member_averaged = masked_data.mean('member')
+            return weighted_horizontal_avg(member_averaged, ensemble=False, time=False)
+        else:
+            return weighted_horizontal_avg(masked_data, ensemble=False, time=False)
 
 
 if __name__ == "__main__":
